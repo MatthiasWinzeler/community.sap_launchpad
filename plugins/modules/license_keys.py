@@ -3,15 +3,14 @@ from ansible.module_utils.basic import AnsibleModule
 from ..module_utils.sap_launchpad_systems_runner import *
 from ..module_utils.sap_id_sso import sap_sso_login
 
-
 DOCUMENTATION = r'''
 ---
 module: license_keys
 
-short_description: Creates systems and license keys on me.sap.com/licensekey
+short_description: Creates/updates/deletes systems and license keys on me.sap.com/licensekey
 
 description:
- - This ansible module creates and updates systems and their license keys using the Launchpad API.
+ - This ansible module creates, updates or deletes systems and their license keys using the Launchpad API.
  - It is closely modeled after the interactions in the portal U(https://me.sap.com/licensekey):
  - First, a SAP system is defined by its SID, product, version and other data.
  - Then, for this system, license keys are defined by license type, HW key and potential other attributes.
@@ -44,32 +43,36 @@ options:
     suboptions:
       nr:
         description:
-          - The number of the system to update. If this attribute is not provided, a new system is created.
+          - For creation/update (C(state == present)): The number of the system to update. If this attribute is not provided, a new system is created.
+          - For deletion (C(state == absent)): The system to delete, required.
         required: false
         type: str
       product:
         description:
           - The product description as found in the SAP portal, e.g. SAP S/4HANA
-        required: true
+          - Required for creation/update (C(state == present))
+        required: false
         type: str
       version:
         description:
           - The description of the product version, as found in the SAP portal, e.g. SAP S/4HANA 2022
-        required: true
+          - Required for creation/update (C(state == present))
+        required: false
         type: str
       data:
         description: 
           - The data attributes of the system. The possible attributes are defined by product and version.
           - Running the module without any data attributes will return in the error message which attributes are supported/required.
-        required: true
+        required: false
         type: dict
 
   licenses:
     description:
-      - List of licenses to create for the system.
+      - List of licenses to create/update for the system.
       - If the license does not exist, it is created.
-      - If it exists, it is updated.
-    required: true
+      - If the license exists, it is updated.
+      - Required for creation/update (C(state == present))
+    required: false
     type: list
     elements: dict
     suboptions:
@@ -93,13 +96,24 @@ options:
     type: bool
     required: false
     default: false
+
+  state:
+    description:
+        - State of the System and License Keys.
+        - Set to C(present) to create/update the systems and generate the license file.
+        - Set to C(absent) to delete the system. 
+        - Similar as the portal, this only deactivates the system and can be reactivated in the portal. Licenses will be kept.
+    default: present
+    type: str
+    choices:
+        - absent
+        - present
     
   
 author:
     - Lab for SAP Solutions
 
 '''
-
 
 EXAMPLES = r'''
 - name: create license keys
@@ -134,8 +148,16 @@ EXAMPLES = r'''
   debug:
     msg:
       - "{{ result.license_file }}"
-'''
 
+- name: delete/deactivate system
+  community.sap_launchpad.license_keys:
+    state: absent
+    suser_id: 'SXXXXXXXX'
+    suser_password: 'password'
+    installation_nr: 12345678
+    system:
+      nr: 23456789
+'''
 
 RETURN = r'''
 license_file:
@@ -183,17 +205,19 @@ def run_module():
         system=dict(
             type='dict',
             options=dict(
-                nr=dict(type='str', required=False),
-                product=dict(type='str', required=True),
-                version=dict(type='str', required=True),
+                nr=dict(type='str'),
+                product=dict(type='str'),
+                version=dict(type='str'),
                 data=dict(type='dict')
-            )
+            ),
+            Required=True,
         ),
-        licenses=dict(type='list', required=True, elements='dict', options=dict(
+        licenses=dict(type='list', elements='dict', options=dict(
             type=dict(type='str', required=True),
             data=dict(type='dict'),
         )),
-        delete_other_licenses=dict(type='bool', required=False, default=False),
+        delete_other_licenses=dict(type='bool', default=False),
+        state=dict(choices=['present', 'absent'], default='present', type='str'),
     )
 
     # Define result dictionary objects to be passed back to Ansible
@@ -220,14 +244,23 @@ def run_module():
     version = system.get('version')
     data = system.get('data')
     licenses = module.params.get('licenses')
-
-    if len(licenses) == 0:
-        module.fail_json("licenses cannot be empty")
-
     delete_other_licenses = module.params.get('delete_other_licenses')
+    state = module.params.get('state')
+
+    # additional validation for which the argument spec/required_if mechanism is not powerful enough
+    # (we can't require presence of a nested object (i.e. system.nr) if a parent param is a certain value (i.e. state=absent))
+    if state == 'present':
+        if not product:
+            module.fail_json("system.product must be specified when creating/updating systems or licenses")
+        if not version:
+            module.fail_json("system.version must be specified when creating/updating systems or licenses")
+        if not licenses:
+            module.fail_json("licenses must be specified when creating/updating systems or licenses")
+    else:  # state == absent
+        if not system_nr:
+            module.fail_json("system.nr must be specified when deleting systems and licenses")
 
     sap_sso_login(username, password)
-
 
     try:
         validate_installation(installation_nr, username)
@@ -241,6 +274,10 @@ def run_module():
             existing_system = get_system(system_nr, installation_nr, username)
         except SystemNrInvalidError as err:
             module.fail_json("System could not be found", system_nr=err.system_nr, details=err.details)
+
+    if state == "absent":
+        delete_system_and_licenses(module, system_nr)
+        module.exit_json(**result)
 
     product_id = None
     try:
@@ -271,7 +308,8 @@ def run_module():
     try:
         license_data = validate_licenses(licenses, version_id, installation_nr, username)
     except LicenseTypeInvalidError as err:
-        module.fail_json(f"Invalid license type", license_type=err.license_type, available_license_types=err.available_license_types)
+        module.fail_json(f"Invalid license type", license_type=err.license_type,
+                         available_license_types=err.available_license_types)
     except DataInvalidError as err:
         module.fail_json(f"Invalid {err.scope} data",
                          unknown_fields=err.unknown_fields,
@@ -299,10 +337,18 @@ def run_module():
         existing_licenses = get_existing_licenses(system_nr, username)
         licenses_to_delete = select_licenses_to_delete(key_nrs, existing_licenses)
         if len(licenses_to_delete) > 0:
-            updated_licenses = delete_licenses(licenses_to_delete, existing_licenses, version_id, installation_nr, username)
+            updated_licenses = delete_licenses(licenses_to_delete, existing_licenses, version_id, installation_nr,
+                                               username)
             submit_system(False, system_data, updated_licenses, username)
 
     module.exit_json(**result)
+
+
+def delete_system_and_licenses(module, system_nr):
+    try:
+        delete_system(system_nr)
+    except SystemDeleteFailedError as err:
+        module.fail_json(f"System deletion failed", msg=err.msg)
 
 
 def main():

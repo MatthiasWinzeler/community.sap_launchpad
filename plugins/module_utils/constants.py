@@ -7,6 +7,7 @@ URL_SERVICE_INCIDENT = 'https://launchpad.support.sap.com/services/odata/inciden
 URL_SERVICE_USER_ADMIN = 'https://launchpad.support.sap.com/services/odata/useradminsrv'
 URL_SOFTWARE_DOWNLOAD = 'https://softwaredownloads.sap.com'
 URL_SYSTEMS_PROVISIONING = 'https://launchpad.support.sap.com/services/odata/i7p/odata/bkey'
+URL_BACKEND = 'https://me.sap.com/backend'
 # Maintainance Planner
 URL_MAINTAINANCE_PLANNER = 'https://maintenanceplanner.cfapps.eu10.hana.ondemand.com'
 URL_USERAPPS = 'https://userapps.support.sap.com/sap/support/mp/index.html'

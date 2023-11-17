@@ -314,6 +314,25 @@ def delete_licenses(licenses_to_delete, existing_licenses, version_id, installat
     return json.loads(response['d']['Result'])
 
 
+class SystemDeleteFailedError(Exception):
+    def __init__(self, msg):
+        self.msg = msg
+
+
+def delete_system(system_nr):
+    response = _request(f'{C.URL_BACKEND}/raw/systemdetail/DelSystem',
+                        data={'SYSNR': system_nr},
+                        headers=_headers({'x-csrf-token': _get_csrf_token_backend()})).content
+    if response != "DELETION_SUCCESS":
+        raise SystemDeleteFailedError(response)
+
+
+# TODO fails with 401, find out why
+def _get_csrf_token_backend():
+    headers = _request(f'{C.URL_BACKEND}/', headers=_headers({'x-csrf-token': 'fetch'}), method='HEAD').headers
+    return headers['X-Csrf-Token']
+
+
 def _url(query_path):
     return f'{C.URL_SYSTEMS_PROVISIONING}/{query_path}'
 
